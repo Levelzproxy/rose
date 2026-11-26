@@ -59,7 +59,7 @@ jobs:
           SESSION_MEMORY_MB: "3072"
           SESSION_CPUS: "2"
           MAX_SESSIONS: "1"
-          POOL_SIZE: "1" # pre-boot one Android container so the first click is instant
+          POOL_SIZE: "0" # no warm container: with 1 rig it would occupy the only slot and put you in line
           SESSION_WIDTH: "720"
           SESSION_HEIGHT: "1280"
           STREAM_BITRATE: "3000000"
@@ -95,6 +95,7 @@ jobs:
           echo "Open: $ROSE_URL   (dies when this job hits 350 min or you cancel it)"
           for i in $(seq 1 340); do
             sleep 60
+            echo "--- rose.log (minute $i) ---"; tail -n 3 rose.log || true
             if ! grep -q "Registered tunnel connection" tunnel.log; then
               echo "tunnel dropped, restarting"; pkill -f cloudflared || true
               nohup ./cloudflared tunnel --no-autoupdate --url http://localhost:8080 > tunnel.log 2>&1 &
