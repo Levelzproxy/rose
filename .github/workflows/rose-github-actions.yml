@@ -43,6 +43,16 @@ jobs:
             https://github.com/Genymobile/scrcpy/releases/download/v3.1/scrcpy-server-v3.1
           mkdir -p apks files roms
 
+      - name: Android image (Rose never pulls it itself - setup-host.sh normally does)
+        run: |
+          set -x
+          for i in 1 2 3; do
+            docker pull redroid/redroid:12.0.0_64only-latest && break
+            echo "pull failed (attempt $i), retrying in 20s"; sleep 20
+          done
+          docker image inspect redroid/redroid:12.0.0_64only-latest > /dev/null
+          docker images redroid/redroid
+
       - name: Start Rose
         env:
           GPU_MODE: guest # no GPU on a runner -> SwiftShader software rendering
