@@ -1,0 +1,92 @@
+# Drop this at .github/workflows/rose.yml in your fork of blockfreeubg/rose.
+# Manual run: Actions tab -> "rose" -> Run workflow. The public URL appears in the run summary.
+name: rose
+
+on:
+  workflow_dispatch:
+  # Optional: auto-restart a fresh 6h session every 6 hours (cron minimum is 5 min).
+  # schedule:
+  #   - cron: "0 */6 * * *"
+
+concurrency:
+  group: rose
+  cancel-in-progress: true
+
+jobs:
+  rose:
+    # x86_64 Ubuntu runner = full VM, root, privileged Docker, and binder_linux present.
+    # (ubuntu-24.04-arm does NOT ship the binder module - do not use it.)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350 # GitHub hard-caps a job at 360 minutes
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Android binder (redroid's one hard kernel requirement)
+        run: |
+          set -x
+          sudo apt-get update -qq
+          # Runner images usually ship binder_linux already; this is the fallback.
+          sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" || true
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
+          sudo modinfo binder_linux | head -3 || echo "no binder_linux module!"
+          sudo mkdir -p /dev/binderfs
+          sudo mount -t binder binder /dev/binderfs || true
+          ls -l /dev/binderfs
+
+      - name: Rose dependencies (mirrors the project Dockerfile)
+        run: |
+          node -v
+          sudo apt-get install -y -qq adb
+          npm install --omit=dev --no-audit --no-fund
+          curl -fsSL -o scrcpy-server \
+            https://github.com/Genymobile/scrcpy/releases/download/v3.1/scrcpy-server-v3.1
+          mkdir -p apks files roms
+
+      - name: Start Rose
+        env:
+          GPU_MODE: guest # no GPU on a runner -> SwiftShader software rendering
+          SESSION_MEMORY_MB: "3072"
+          SESSION_CPUS: "2"
+          MAX_SESSIONS: "1"
+          POOL_SIZE: "1" # pre-boot one Android container so the first click is instant
+          SESSION_WIDTH: "720"
+          SESSION_HEIGHT: "1280"
+          STREAM_BITRATE: "3000000"
+          CACHE_MB: "4096"
+          SCRCPY_VERSION: "3.1"
+        run: |
+          nohup node server/index.js > rose.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://localhost:8080/; then echo "rose up"; break; fi
+            sleep 2
+          done
+          tail -n 20 rose.log || true
+
+      - name: Public HTTPS link (Cloudflare quick tunnel, no account)
+        run: |
+          curl -fsSL -o cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          nohup ./cloudflared tunnel --no-autoupdate --url http://localhost:8080 > tunnel.log 2>&1 &
+          url=""
+          for i in $(seq 1 45); do
+            url=$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -1 || true)
+            [ -n "$url" ] && break
+            sleep 2
+          done
+          if [ -z "$url" ]; then echo "tunnel failed:"; cat tunnel.log; exit 1; fi
+          echo "### Rose is live: $url" >> "$GITHUB_STEP_SUMMARY"
+          echo "ROSE_URL=$url" >> "$GITHUB_ENV"
+          echo "URL: $url"
+
+      - name: Keep the session alive until the 6h cap
+        run: |
+          echo "Open: $ROSE_URL   (dies when this job hits 350 min or you cancel it)"
+          for i in $(seq 1 340); do
+            sleep 60
+            if ! grep -q "Registered tunnel connection" tunnel.log; then
+              echo "tunnel dropped, restarting"; pkill -f cloudflared || true
+              nohup ./cloudflared tunnel --no-autoupdate --url http://localhost:8080 > tunnel.log 2>&1 &
+            fi
+          done
